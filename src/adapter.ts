@@ -4,6 +4,7 @@ import { create, getNumericDate } from "jsr:@emrahcom/jwt@^0.4.8";
 import type { Algorithm } from "jsr:@emrahcom/jwt@^0.4.8/algorithm";
 import {
   AUTO_RETURN_TO_APP,
+  GUEST_PARAM,
   HOSTNAME,
   JWT_ALG,
   JWT_APP_ID,
@@ -14,6 +15,7 @@ import {
   OIDC_CLIENT_ID,
   OIDC_CLIENT_SECRET,
   OIDC_ISSUER_URL,
+  OIDC_PROMPT,
   OIDC_SCOPES,
   PORT,
 } from "./config.ts";
@@ -35,8 +37,23 @@ interface StateType {
   ios?: boolean;
   room: string;
   tenant?: string;
+  silent?: boolean;
   [key: string]: boolean | string | undefined;
 }
+
+// Errors returned by the OIDC provider for "prompt=none" when the user has no
+// usable session. See OpenID Connect Core 1.0, section 3.1.2.6.
+const SILENT_LOGIN_ERRORS = [
+  "login_required",
+  "interaction_required",
+  "consent_required",
+  "account_selection_required",
+];
+
+// Allowed characters for room and tenant names. It mirrors the room location
+// of Jitsi's Nginx config (no "/", "?", "&", ":", quotes) and also rejects
+// characters which are meaningful in HTML or URLs.
+const NAME_REGEX = /^[^\/?&:'"#<>%\\\s]{1,256}$/u;
 
 const enum ClientType {
   ios,
@@ -93,6 +110,15 @@ function unauthorized(): Response {
 }
 
 // -----------------------------------------------------------------------------
+// HTTP response for BadRequest
+// -----------------------------------------------------------------------------
+function badRequest(): Response {
+  return new Response(null, {
+    status: STATUS_CODE.BadRequest,
+  });
+}
+
+// -----------------------------------------------------------------------------
 // Generate and set the crypto key at the beginning and use the same crypto key
 // during the process lifetime.
 // -----------------------------------------------------------------------------
@@ -138,9 +164,21 @@ async function getEndpoints() {
 }
 
 // -----------------------------------------------------------------------------
+// HTML escape
+// -----------------------------------------------------------------------------
+function escapeHtml(text: string): string {
+  return text
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+// -----------------------------------------------------------------------------
 // Prepare the auth URI for the OIDC auth page.
 // -----------------------------------------------------------------------------
-async function getAuthUri(redirectUri: string, state: string) {
+async function getAuthUri(redirectUri: string, state: string, prompt: string) {
   if (!AUTH_ENDPOINT) await getEndpoints();
   if (!AUTH_ENDPOINT) throw new Error("Missing authentication endpoint");
 
@@ -148,10 +186,10 @@ async function getAuthUri(redirectUri: string, state: string) {
     client_id: OIDC_CLIENT_ID,
     response_type: "code",
     scope: OIDC_SCOPES,
-    prompt: "consent",
     redirect_uri: redirectUri,
     state: state,
   });
+  if (prompt) params.set("prompt", prompt);
 
   return `${AUTH_ENDPOINT}?${params.toString()}`;
 }
@@ -169,13 +207,136 @@ async function auth(req: Request): Promise<Response> {
     if (!state) throw new Error("state not found");
 
     const redirectUri = `https://${host}/oidc/tokenize`;
-    const authPage = await getAuthUri(redirectUri, state);
+    const authPage = await getAuthUri(redirectUri, state, OIDC_PROMPT);
 
     return Response.redirect(authPage, STATUS_CODE.Found);
   } catch (e) {
     console.error(e);
     return unauthorized();
   }
+}
+
+// -----------------------------------------------------------------------------
+// Silent login (one link for everybody)
+// - The web server redirects the plain meeting link here if the request has
+//   neither a token nor the guest marker.
+// - Ask the OIDC provider with "prompt=none" whether the user already has a
+//   session. The provider never shows a page for this request.
+// - With a session, the provider returns a code and the usual tokenize flow
+//   sends the user into the meeting with a token.
+// - Without a session, the provider returns an error such as "login_required"
+//   and tokenize shows the choice page (log in or continue as guest).
+// -----------------------------------------------------------------------------
+async function silent(req: Request): Promise<Response> {
+  try {
+    const host = req.headers.get("host");
+    if (!host) throw new Error("host not found");
+
+    const url = new URL(req.url);
+    const room = url.searchParams.get("room") || "";
+    if (!NAME_REGEX.test(room)) throw new Error("invalid room");
+
+    const tenant = url.searchParams.get("tenant") || undefined;
+    if (tenant !== undefined && !NAME_REGEX.test(tenant)) {
+      throw new Error("invalid tenant");
+    }
+
+    const state: StateType = { room: room, silent: true };
+    if (tenant) state.tenant = tenant;
+
+    const redirectUri = `https://${host}/oidc/tokenize`;
+    const authPage = await getAuthUri(
+      redirectUri,
+      JSON.stringify(state),
+      "none",
+    );
+
+    return Response.redirect(authPage, STATUS_CODE.Found);
+  } catch (e) {
+    console.error(e);
+    return badRequest();
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Get the meeting URI for guests (no token, guest marker).
+// -----------------------------------------------------------------------------
+function getGuestUri(host: string, state: StateType): string {
+  let path = "";
+  if (state.tenant) path += `/${encodeURIComponent(state.tenant)}`;
+  path += `/${encodeURIComponent(state.room)}`;
+
+  return `https://${host}${path}?${encodeURIComponent(GUEST_PARAM)}=true`;
+}
+
+// -----------------------------------------------------------------------------
+// Choice page after a failed silent login: log in or continue as guest.
+// -----------------------------------------------------------------------------
+function choicePage(host: string, state: StateType): Response {
+  // Interactive login. The state no longer has the "silent" flag.
+  const loginState: StateType = { room: state.room };
+  if (state.tenant) loginState.tenant = state.tenant;
+  const loginUri = `/oidc/auth?state=${
+    encodeURIComponent(JSON.stringify(loginState))
+  }`;
+  const guestUri = getGuestUri(host, state);
+  const room = escapeHtml(state.room);
+
+  const body = `<!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="utf-8">
+      <title>Join meeting</title>
+      <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1, shrink-to-fit=no"
+      >
+      <style>
+        body {
+          font-family: sans-serif;
+          display: flex;
+          justify-content: center;
+          align-items: center;
+          min-height: 100vh;
+          margin: 0;
+          padding: 16px;
+          box-sizing: border-box;
+          background: #f5f5f5;
+        }
+        main {
+          background: #fff;
+          padding: 24px;
+          border-radius: 8px;
+          max-width: 400px;
+          width: 100%;
+          text-align: center;
+        }
+        a {
+          display: block;
+          margin-top: 12px;
+          padding: 12px;
+          border-radius: 6px;
+          text-decoration: none;
+        }
+        .login { background: #246fe5; color: #fff; }
+        .guest { border: 1px solid #ccc; color: #333; }
+      </style>
+    </head>
+    <body>
+      <main>
+        <h1>Join meeting</h1>
+        <p>${room}</p>
+        <a class="login" href="${escapeHtml(loginUri)}">Log in</a>
+        <a class="guest" href="${escapeHtml(guestUri)}">Continue as guest</a>
+      </main>
+    </body>
+    </html>`;
+
+  const headers = new Headers();
+  headers.append("Content-Type", "text/html; charset=utf-8");
+  headers.append("Cache-Control", "no-store");
+
+  return new Response(body, { headers: headers });
 }
 
 // -----------------------------------------------------------------------------
@@ -407,13 +568,29 @@ async function tokenize(req: Request): Promise<Response> {
     const url = new URL(req.url);
     const searchParams = url.searchParams;
 
-    const code = searchParams.get("code");
-    if (!code) throw new Error("code not found");
-
     const jsonState = searchParams.get("state");
     if (!jsonState) throw new Error("state not found");
 
     const state = JSON.parse(jsonState) as StateType;
+
+    // The silent login failed because the user has no session. Let the user
+    // choose between an interactive login and joining as a guest.
+    const error = searchParams.get("error");
+    if (error) {
+      if (
+        state.silent && SILENT_LOGIN_ERRORS.includes(error) &&
+        NAME_REGEX.test(state.room || "") &&
+        (state.tenant === undefined || NAME_REGEX.test(state.tenant))
+      ) {
+        return choicePage(host, state);
+      }
+
+      throw new Error(`OIDC error: ${error}`);
+    }
+
+    const code = searchParams.get("code");
+    if (!code) throw new Error("code not found");
+
     const sub = getSub(host, state.tenant);
     const room = state.room;
     if (!room) throw new Error("room not found in state");
@@ -454,6 +631,8 @@ async function handler(req: Request): Promise<Response> {
     return ok("healthy");
   } else if (path === "/oidc/auth") {
     return await auth(req);
+  } else if (path === "/oidc/silent") {
+    return await silent(req);
   } else if (path === "/oidc/tokenize") {
     return await tokenize(req);
   } else {
@@ -477,6 +656,8 @@ async function main() {
     `OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET ? "*** masked ***" : "not used"}`,
   );
   console.log(`OIDC_SCOPES: ${OIDC_SCOPES}`);
+  console.log(`OIDC_PROMPT: ${OIDC_PROMPT}`);
+  console.log(`GUEST_PARAM: ${GUEST_PARAM}`);
   console.log(`JWT_ALG: ${JWT_ALG}`);
   console.log(`JWT_HASH: ${JWT_HASH}`);
   console.log(`JWT_APP_ID: ${JWT_APP_ID}`);

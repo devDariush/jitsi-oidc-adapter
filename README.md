@@ -27,6 +27,9 @@ standalone Jitsi server.
 See [Docker setup](./docs/setup-docker.md) guide to integrate it with a
 Dockerized Jitsi setup.
 
+See [Silent login](./docs/silent-login.md) to use the same meeting link for
+authenticated users and guests.
+
 ## 3. Keycloak configuration
 
 If your OIDC provider is `Keycloak` then create `client` inside `realm`.

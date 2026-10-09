@@ -5,6 +5,9 @@ export const OIDC_CLIENT_ID = Deno.env.get("OIDC_CLIENT_ID") || "jitsi";
 export const OIDC_CLIENT_SECRET = Deno.env.get("OIDC_CLIENT_SECRET") || "";
 export const OIDC_SCOPES = Deno.env.get("OIDC_SCOPES") ||
   "openid profile email";
+// The "prompt" value sent for interactive logins. Set it to an empty string to
+// omit the parameter (the provider then only asks for consent when needed).
+export const OIDC_PROMPT = Deno.env.get("OIDC_PROMPT") ?? "consent";
 
 // jwt
 export const JWT_ALG = Deno.env.get("JWT_ALG") || "HS256";
@@ -21,5 +24,9 @@ export const JWT_NBF_LEEWAY_SECOND = Number(
 // adapter
 export const HOSTNAME = Deno.env.get("HOSTNAME") || "127.0.0.1";
 export const PORT = Number(Deno.env.get("PORT") || 9000);
+// Query parameter that marks a guest in the meeting URL. The silent login
+// flow sends users without an IdP session back to the room with this marker so
+// that the web server does not redirect them to the adapter again.
+export const GUEST_PARAM = Deno.env.get("GUEST_PARAM") || "guest";
 export const AUTO_RETURN_TO_APP =
   Deno.env.get("AUTO_RETURN_TO_APP")?.toLowerCase() === "true";
