@@ -110,6 +110,15 @@ function unauthorized(): Response {
 }
 
 // -----------------------------------------------------------------------------
+// HTTP response for BadGateway
+// -----------------------------------------------------------------------------
+function badGateway(): Response {
+  return new Response(null, {
+    status: STATUS_CODE.BadGateway,
+  });
+}
+
+// -----------------------------------------------------------------------------
 // HTTP response for BadRequest
 // -----------------------------------------------------------------------------
 function badRequest(): Response {
@@ -228,19 +237,27 @@ async function auth(req: Request): Promise<Response> {
 //   and tokenize shows the choice page (log in or continue as guest).
 // -----------------------------------------------------------------------------
 async function silent(req: Request): Promise<Response> {
+  const host = req.headers.get("host");
+  const url = new URL(req.url);
+  const room = url.searchParams.get("room") || "";
+  const tenant = url.searchParams.get("tenant") || undefined;
+
+  // Client side errors: invalid request.
+  if (!host) {
+    console.error("silent: host not found");
+    return badRequest();
+  }
+  if (!NAME_REGEX.test(room)) {
+    console.error(`silent: invalid room: ${JSON.stringify(room)}`);
+    return badRequest();
+  }
+  if (tenant !== undefined && !NAME_REGEX.test(tenant)) {
+    console.error(`silent: invalid tenant: ${JSON.stringify(tenant)}`);
+    return badRequest();
+  }
+
+  // Server side errors: e.g. the OIDC provider is not reachable.
   try {
-    const host = req.headers.get("host");
-    if (!host) throw new Error("host not found");
-
-    const url = new URL(req.url);
-    const room = url.searchParams.get("room") || "";
-    if (!NAME_REGEX.test(room)) throw new Error("invalid room");
-
-    const tenant = url.searchParams.get("tenant") || undefined;
-    if (tenant !== undefined && !NAME_REGEX.test(tenant)) {
-      throw new Error("invalid tenant");
-    }
-
     const state: StateType = { room: room, silent: true };
     if (tenant) state.tenant = tenant;
 
@@ -253,8 +270,9 @@ async function silent(req: Request): Promise<Response> {
 
     return Response.redirect(authPage, STATUS_CODE.Found);
   } catch (e) {
+    console.error("silent: OIDC provider not available, check OIDC_ISSUER_URL");
     console.error(e);
-    return badRequest();
+    return badGateway();
   }
 }
 
