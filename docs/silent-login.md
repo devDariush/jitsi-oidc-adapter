@@ -28,19 +28,30 @@ The silent login flow fixes this. Everybody uses the same link:
 
 ## Nginx
 
-Update the room location of your Jitsi Nginx config:
+Put the check into the `@root_path` location of your Jitsi Nginx config, not
+into the room location. `@root_path` is only reached when the path is not a real
+file, i.e. for meeting rooms. A check in the room location would also catch real
+files like `/manifest.json` and the SSI subrequests of `index.html` (e.g.
+`/head.html`, `/interface_config.js`), which have no query arguments and would
+break the page.
 
 ```nginx
 location ~ ^/([^/?&:'"]+)$ {
     set $roomname "$1";
+    try_files $uri @root_path;
+}
 
+location @root_path {
     # silent login: no token and no guest marker
     set $auth_check "$arg_jwt$arg_guest";
+    if ($roomname = "") {
+        set $auth_check "skip";
+    }
     if ($auth_check = "") {
         return 302 /oidc/silent?room=$roomname;
     }
 
-    try_files $uri @root_path;
+    rewrite ^/(.*)$ /$custom_index break;
 }
 ```
 
