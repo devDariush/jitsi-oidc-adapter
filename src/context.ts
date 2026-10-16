@@ -19,6 +19,9 @@ export function createContext(userInfo: UserInfo) {
       email: userInfo.email?.trim() || "",
       lobby_bypass: true,
       security_bypass: true,
+      // Every authenticated user is a moderator (owner). token_affiliation
+      // reads this field.
+      affiliation: "owner",
     },
   };
 
