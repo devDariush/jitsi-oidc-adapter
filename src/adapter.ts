@@ -21,6 +21,7 @@ import {
 } from "./config.ts";
 import { createContext } from "./context.ts";
 import type { UserInfo } from "./context.ts";
+import { choicePage, PAGE_HEADERS, returnToAppPage } from "./pages.ts";
 
 // -----------------------------------------------------------------------------
 // Globals
@@ -173,18 +174,6 @@ async function getEndpoints() {
 }
 
 // -----------------------------------------------------------------------------
-// HTML escape
-// -----------------------------------------------------------------------------
-function escapeHtml(text: string): string {
-  return text
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
-}
-
-// -----------------------------------------------------------------------------
 // Prepare the auth URI for the OIDC auth page.
 // -----------------------------------------------------------------------------
 async function getAuthUri(redirectUri: string, state: string, prompt: string) {
@@ -290,7 +279,7 @@ function getGuestUri(host: string, state: StateType): string {
 // -----------------------------------------------------------------------------
 // Choice page after a failed silent login: log in or continue as guest.
 // -----------------------------------------------------------------------------
-function choicePage(host: string, state: StateType): Response {
+function choice(host: string, state: StateType): Response {
   // Interactive login. The state no longer has the "silent" flag.
   const loginState: StateType = { room: state.room };
   if (state.tenant) loginState.tenant = state.tenant;
@@ -298,63 +287,10 @@ function choicePage(host: string, state: StateType): Response {
     encodeURIComponent(JSON.stringify(loginState))
   }`;
   const guestUri = getGuestUri(host, state);
-  const room = escapeHtml(state.room);
 
-  const body = `<!DOCTYPE html>
-    <html>
-    <head>
-      <meta charset="utf-8">
-      <title>Join meeting</title>
-      <meta
-        name="viewport"
-        content="width=device-width, initial-scale=1, shrink-to-fit=no"
-      >
-      <style>
-        body {
-          font-family: sans-serif;
-          display: flex;
-          justify-content: center;
-          align-items: center;
-          min-height: 100vh;
-          margin: 0;
-          padding: 16px;
-          box-sizing: border-box;
-          background: #f5f5f5;
-        }
-        main {
-          background: #fff;
-          padding: 24px;
-          border-radius: 8px;
-          max-width: 400px;
-          width: 100%;
-          text-align: center;
-        }
-        a {
-          display: block;
-          margin-top: 12px;
-          padding: 12px;
-          border-radius: 6px;
-          text-decoration: none;
-        }
-        .login { background: #246fe5; color: #fff; }
-        .guest { border: 1px solid #ccc; color: #333; }
-      </style>
-    </head>
-    <body>
-      <main>
-        <h1>Join meeting</h1>
-        <p>${room}</p>
-        <a class="login" href="${escapeHtml(loginUri)}">Log in</a>
-        <a class="guest" href="${escapeHtml(guestUri)}">Continue as guest</a>
-      </main>
-    </body>
-    </html>`;
-
-  const headers = new Headers();
-  headers.append("Content-Type", "text/html; charset=utf-8");
-  headers.append("Cache-Control", "no-store");
-
-  return new Response(body, { headers: headers });
+  return new Response(choicePage(state.room, loginUri, guestUri), {
+    headers: PAGE_HEADERS,
+  });
 }
 
 // -----------------------------------------------------------------------------
@@ -542,33 +478,10 @@ function generateTokenizeResponse(uri: string, client: ClientType): Response {
   }
 
   // Show page in web browser that feeds JWT to other clients.
-  const body = `<!DOCTYPE html>
-    <html>
-    <head>
-      <title>Meeting Authentication</title>
-      <meta
-        name="viewport"
-        content="width=device-width, initial-scale=1, shrink-to-fit=no"
-      >
-    </head>
-    <body>
-      <h1>Meeting Authentication</h1>
-      <p>
-        <a href="${uri}">
-          <strong>Finish authentication and return to app</strong>
-        </a>
-      </p>
-      <p>
-        <small>After successful authentication, this tab can be closed.</small>
-      </p>
-    </body>
-    </html>`;
-
-  const headers = new Headers();
-  headers.append("Content-Type", "text/html");
+  const headers = new Headers(PAGE_HEADERS);
   if (AUTO_RETURN_TO_APP) headers.append("Refresh", `0; url=${uri}`);
 
-  return new Response(body, { headers: headers });
+  return new Response(returnToAppPage(uri), { headers: headers });
 }
 
 // -----------------------------------------------------------------------------
@@ -600,7 +513,7 @@ async function tokenize(req: Request): Promise<Response> {
         NAME_REGEX.test(state.room || "") &&
         (state.tenant === undefined || NAME_REGEX.test(state.tenant))
       ) {
-        return choicePage(host, state);
+        return choice(host, state);
       }
 
       throw new Error(`OIDC error: ${error}`);
