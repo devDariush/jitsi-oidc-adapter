@@ -9,6 +9,22 @@ export interface UserInfo {
   name?: string;
   preferred_username?: string;
   email?: string;
+  picture?: string;
+}
+
+// -----------------------------------------------------------------------------
+// The "picture" claim (e.g. the Google profile picture) is placed into the
+// client's <img> as the avatar. Accept only HTTPS URLs.
+// -----------------------------------------------------------------------------
+function getAvatar(picture: string | undefined): string {
+  try {
+    const url = new URL(picture?.trim() || "");
+    if (url.protocol === "https:") return url.href;
+  } catch {
+    // invalid or missing URL
+  }
+
+  return "";
 }
 
 export function createContext(userInfo: UserInfo) {
@@ -17,6 +33,7 @@ export function createContext(userInfo: UserInfo) {
       id: userInfo.sub,
       name: userInfo.name?.trim() || userInfo.preferred_username?.trim() || "",
       email: userInfo.email?.trim() || "",
+      avatar: getAvatar(userInfo.picture),
       lobby_bypass: true,
       security_bypass: true,
     },
