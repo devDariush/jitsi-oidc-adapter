@@ -34,8 +34,9 @@ export function createContext(userInfo: UserInfo) {
       name: userInfo.name?.trim() || userInfo.preferred_username?.trim() || "",
       email: userInfo.email?.trim() || "",
       avatar: getAvatar(userInfo.picture),
-      lobby_bypass: true,
-      security_bypass: true,
+      // No lobby_bypass or affiliation claims: Prosody's muc_lobby_whitelist
+      // lets token users skip the lobby and Jicofo's JWT authentication makes
+      // every token user a moderator.
     },
   };
 
